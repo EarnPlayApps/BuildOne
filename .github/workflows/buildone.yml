@@ -16,51 +16,90 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: buildone-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
+    name: BuildOne Real Build
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
           cache: gradle
       - name: Read BuildOne request
         id: request
+        shell: bash
         run: |
           set -euo pipefail
           test -s .buildone/trigger.json
           TYPE=$(python3 -c "import json; print(json.load(open('.buildone/trigger.json'))['build_type'])")
           case "$TYPE" in APK|AAB) ;; *) echo "Invalid build_type: $TYPE"; exit 1;; esac
           echo "type=$TYPE" >> "$GITHUB_OUTPUT"
-      - name: Install compatible Gradle
+      - name: Install compatible Gradle 8.7
+        shell: bash
         run: |
+          set -euo pipefail
           curl -fsSL https://services.gradle.org/distributions/gradle-8.7-bin.zip -o /tmp/gradle.zip
           unzip -q /tmp/gradle.zip -d /tmp
           echo "/tmp/gradle-8.7/bin" >> "$GITHUB_PATH"
+          gradle --version
       - name: Build Gate
+        shell: bash
         run: |
           set -euo pipefail
           test -f settings.gradle
           test -f build.gradle
+          test -f gradle.properties
           test -f app/build.gradle
           test -f app/src/main/AndroidManifest.xml
           test -s app/src/main/assets/index.html
+          grep -q "com.android.application" build.gradle
+          grep -q "play-services-ads:25.4.0" app/build.gradle
+          grep -q "com.google.android.gms.ads.APPLICATION_ID" app/src/main/AndroidManifest.xml
+          grep -q "ca-app-pub-9940728659432865~7416412396" app/src/main/AndroidManifest.xml
+          if grep -Eqi '<uses-sdk|targetSdkVersion|minSdkVersion' app/src/main/assets/index.html; then echo 'SDK metadata leaked into WebView asset'; exit 1; fi
+          python3 - <<'PY'
+          import re
+          p=open('app/build.gradle').read()
+          for key,minimum in [('compileSdk',35),('minSdk',23),('targetSdk',35)]:
+              m=re.search(r'\b'+key+r'\s+(\d+)',p)
+              assert m and int(m.group(1))>=minimum, key+' compatibility gate failed'
+          print('Compatibility gate PASS: JDK17 / Gradle8.7 / AGP8.6.1 / SDK35 / min23')
+          PY
       - name: Real Gradle build
         run: |
+          set -euo pipefail
           if [ "${{ steps.request.outputs.type }}" = "AAB" ]; then gradle bundleRelease --no-daemon --stacktrace; else gradle assembleRelease --no-daemon --stacktrace; fi
       - name: Artifact Verification
+        shell: bash
         run: |
           set -euo pipefail
-          if [ "${{ steps.request.outputs.type }}" = "AAB" ]; then FILE=$(find app/build/outputs/bundle -type f -name '*.aab' | head -1); else FILE=$(find app/build/outputs/apk -type f -name '*.apk' | head -1); fi
-          test -n "$FILE"
-          test -s "$FILE"
+          TYPE="${{ steps.request.outputs.type }}"
+          if [ "$TYPE" = "AAB" ]; then FILE=$(find app/build/outputs/bundle -type f -name '*.aab' -print -quit); else FILE=$(find app/build/outputs/apk -type f -name '*.apk' -print -quit); fi
+          test -n "$FILE" && test -f "$FILE" && test -s "$FILE"
+          case "$FILE" in *.aab) [ "$TYPE" = AAB ];; *.apk) [ "$TYPE" = APK ];; *) exit 1;; esac
           SHA=$(sha256sum "$FILE" | awk '{print $1}')
           SIZE=$(stat -c%s "$FILE")
+          test "$SIZE" -gt 0
           printf '%s  %s\n' "$SHA" "$FILE" > artifact.sha256
-          printf '{"build_id":"%s","type":"%s","size":%s,"sha256":"%s"}\n' "${{ github.run_id }}" "${{ steps.request.outputs.type }}" "$SIZE" "$SHA" > buildone-artifact.json
-      - uses: actions/upload-artifact@v4
+          python3 - <<PY
+          import json
+          data={'build_id':'${{ github.run_id }}','type':'$TYPE','size':$SIZE,'sha256':'$SHA','commit':'${{ github.sha }}','workflow':'${{ github.workflow }}','run_number':${{ github.run_number }},'artifact_file':'$FILE'}
+          open('buildone-artifact.json','w').write(json.dumps(data,indent=2)+'\n')
+          print(json.dumps(data,indent=2))
+          PY
+      - name: Upload verified artifact bundle
+        uses: actions/upload-artifact@v4
         with:
           name: buildone-${{ steps.request.outputs.type }}-${{ github.run_id }}
           path: |
@@ -69,3 +108,4 @@ jobs:
             artifact.sha256
             buildone-artifact.json
           if-no-files-found: error
+          retention-days: 90
