@@ -1,5 +1,10 @@
 name: BuildOne Real Android Build
+
 on:
+  push:
+    branches: [main]
+    paths:
+      - '.buildone/trigger.json'
   workflow_dispatch:
     inputs:
       build_type:
@@ -7,8 +12,10 @@ on:
         default: APK
         type: choice
         options: [APK, AAB]
+
 permissions:
   contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -19,6 +26,14 @@ jobs:
           distribution: temurin
           java-version: '17'
           cache: gradle
+      - name: Read BuildOne request
+        id: request
+        run: |
+          set -euo pipefail
+          test -s .buildone/trigger.json
+          TYPE=$(python3 -c "import json; print(json.load(open('.buildone/trigger.json'))['build_type'])")
+          case "$TYPE" in APK|AAB) ;; *) echo "Invalid build_type: $TYPE"; exit 1;; esac
+          echo "type=$TYPE" >> "$GITHUB_OUTPUT"
       - name: Install compatible Gradle
         run: |
           curl -fsSL https://services.gradle.org/distributions/gradle-8.7-bin.zip -o /tmp/gradle.zip
@@ -34,20 +49,20 @@ jobs:
           test -s app/src/main/assets/index.html
       - name: Real Gradle build
         run: |
-          if [ "${{ inputs.build_type }}" = "AAB" ]; then gradle bundleRelease --no-daemon --stacktrace; else gradle assembleRelease --no-daemon --stacktrace; fi
+          if [ "${{ steps.request.outputs.type }}" = "AAB" ]; then gradle bundleRelease --no-daemon --stacktrace; else gradle assembleRelease --no-daemon --stacktrace; fi
       - name: Artifact Verification
         run: |
           set -euo pipefail
-          if [ "${{ inputs.build_type }}" = "AAB" ]; then FILE=$(find app/build/outputs/bundle -type f -name '*.aab' | head -1); else FILE=$(find app/build/outputs/apk -type f -name '*.apk' | head -1); fi
+          if [ "${{ steps.request.outputs.type }}" = "AAB" ]; then FILE=$(find app/build/outputs/bundle -type f -name '*.aab' | head -1); else FILE=$(find app/build/outputs/apk -type f -name '*.apk' | head -1); fi
           test -n "$FILE"
           test -s "$FILE"
           SHA=$(sha256sum "$FILE" | awk '{print $1}')
           SIZE=$(stat -c%s "$FILE")
           printf '%s  %s\n' "$SHA" "$FILE" > artifact.sha256
-          printf '{"build_id":"%s","type":"%s","size":%s,"sha256":"%s"}\n' "${{ github.run_id }}" "${{ inputs.build_type }}" "$SIZE" "$SHA" > buildone-artifact.json
+          printf '{"build_id":"%s","type":"%s","size":%s,"sha256":"%s"}\n' "${{ github.run_id }}" "${{ steps.request.outputs.type }}" "$SIZE" "$SHA" > buildone-artifact.json
       - uses: actions/upload-artifact@v4
         with:
-          name: buildone-${{ inputs.build_type }}-${{ github.run_id }}
+          name: buildone-${{ steps.request.outputs.type }}-${{ github.run_id }}
           path: |
             app/build/outputs/apk/**/*.apk
             app/build/outputs/bundle/**/*.aab
