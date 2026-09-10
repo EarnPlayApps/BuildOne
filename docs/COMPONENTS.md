@@ -1,0 +1,5 @@
+# BuildOne v1.0 components
+
+HTML → APK; HTML → AAB; APK → AdMob; AdMob → Publish; Smart Core; Analyze; Auto Repair; Retry; Verify; Build Engine; Android Gradle; Version Compatibility; GitHub Actions; Build Gate; Artifact Verification; Backup + Rollback; Real Build History; Project Manager; Advanced Editor; Live Preview; Android Generator; Dependency Manager; Web → Android Compatibility; App Configuration; AdMob Manager; Signing Manager; Security Core; Privacy & Legal; GitHub Integration; CI/CD Recovery; Build Queue; Artifact Manager; Download Manager; Build Logs; Notifications; Release Manager; Publish Center; Dashboard; Migration Engine; Templates; One-Click Auto Build; Diagnostics / Health Center.
+
+Provider-dependent actions are deliberately kept behind the Worker and GitHub Actions so secrets are not exposed in the browser.
