@@ -1,0 +1,5 @@
+# BuildOne app-ads.txt template
+# Replace the placeholder with your real AdMob Publisher ID.
+# Publisher ID format: pub-XXXXXXXXXXXXXXXX
+
+google.com, pub-XXXXXXXXXXXXXXXX, DIRECT, f08c47fec0942fa0
