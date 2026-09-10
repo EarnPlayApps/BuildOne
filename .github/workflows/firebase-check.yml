@@ -1,0 +1,45 @@
+name: BuildOne Firebase Check
+
+on:
+  push:
+    paths:
+      - 'firebase/**'
+      - '.github/workflows/firebase-check.yml'
+  pull_request:
+    paths:
+      - 'firebase/**'
+      - '.github/workflows/firebase-check.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        working-directory: firebase/functions
+        run: npm ci
+      - name: Syntax check
+        run: node --check firebase/functions/index.js
+      - name: Package/config checks
+        run: |
+          set -euo pipefail
+          test -s firebase/firebase.json
+          test -s firebase/firestore.rules
+          test -s firebase/storage.rules
+          test -s firebase/functions/package.json
+          grep -q 'firebase-functions' firebase/functions/package.json
+          grep -q 'firebase-admin' firebase/functions/package.json
+      - name: Security source checks
+        run: |
+          set -euo pipefail
+          ! grep -RInE 'ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AIza[0-9A-Za-z_-]{20,}' firebase --exclude-dir=node_modules
+          grep -q 'defineSecret' firebase/functions/index.js
+          grep -q 'BUILDONE_API_KEY' firebase/functions/index.js
+          grep -q 'GITHUB_TOKEN' firebase/functions/index.js
