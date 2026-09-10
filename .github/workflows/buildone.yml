@@ -1,0 +1,56 @@
+name: BuildOne Real Android Build
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        required: true
+        default: APK
+        type: choice
+        options: [APK, AAB]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - name: Install compatible Gradle
+        run: |
+          curl -fsSL https://services.gradle.org/distributions/gradle-8.7-bin.zip -o /tmp/gradle.zip
+          unzip -q /tmp/gradle.zip -d /tmp
+          echo "/tmp/gradle-8.7/bin" >> "$GITHUB_PATH"
+      - name: Build Gate
+        run: |
+          set -euo pipefail
+          test -f settings.gradle
+          test -f build.gradle
+          test -f app/build.gradle
+          test -f app/src/main/AndroidManifest.xml
+          test -s app/src/main/assets/index.html
+      - name: Real Gradle build
+        run: |
+          if [ "${{ inputs.build_type }}" = "AAB" ]; then gradle bundleRelease --no-daemon --stacktrace; else gradle assembleRelease --no-daemon --stacktrace; fi
+      - name: Artifact Verification
+        run: |
+          set -euo pipefail
+          if [ "${{ inputs.build_type }}" = "AAB" ]; then FILE=$(find app/build/outputs/bundle -type f -name '*.aab' | head -1); else FILE=$(find app/build/outputs/apk -type f -name '*.apk' | head -1); fi
+          test -n "$FILE"
+          test -s "$FILE"
+          SHA=$(sha256sum "$FILE" | awk '{print $1}')
+          SIZE=$(stat -c%s "$FILE")
+          printf '%s  %s\n' "$SHA" "$FILE" > artifact.sha256
+          printf '{"build_id":"%s","type":"%s","size":%s,"sha256":"%s"}\n' "${{ github.run_id }}" "${{ inputs.build_type }}" "$SIZE" "$SHA" > buildone-artifact.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: buildone-${{ inputs.build_type }}-${{ github.run_id }}
+          path: |
+            app/build/outputs/apk/**/*.apk
+            app/build/outputs/bundle/**/*.aab
+            artifact.sha256
+            buildone-artifact.json
+          if-no-files-found: error
