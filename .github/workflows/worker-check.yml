@@ -8,6 +8,7 @@ on:
     paths:
       - 'worker/**'
       - '.github/workflows/worker-check.yml'
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
@@ -22,5 +23,13 @@ jobs:
         run: node --check worker/src/index.js
       - name: Wrangler configuration check
         run: |
+          set -euo pipefail
           test -s worker/wrangler.toml
           grep -q 'src/index.js' worker/wrangler.toml
+      - name: Required verification routes
+        run: |
+          set -euo pipefail
+          grep -q "verify-app-ads-txt" worker/src/index.js
+          grep -q "function artifact" worker/src/index.js
+          grep -q "Artifact/run ID mismatch" worker/src/index.js
+          grep -q "Artifact type mismatch" worker/src/index.js
