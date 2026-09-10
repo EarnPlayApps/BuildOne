@@ -2,6 +2,7 @@ const { onRequest } = require('firebase-functions/v2/https');
 const { defineSecret } = require('firebase-functions/params');
 const { initializeApp } = require('firebase-admin/app');
 const { getFirestore, FieldValue } = require('firebase-admin/firestore');
+const dns = require('node:dns').promises;
 
 initializeApp();
 const db = getFirestore();
@@ -32,11 +33,7 @@ async function putFile(owner, repo, path, content, branch) {
   const existing = await gh(`${url}?ref=${encodeURIComponent(branch)}`);
   let sha;
   if (existing.ok) sha = (await existing.json()).sha;
-  const body = {
-    message: `BuildOne Firebase: ${sha ? 'update' : 'create'} ${path}`,
-    content: Buffer.from(content, 'utf8').toString('base64'),
-    branch
-  };
+  const body = { message: `BuildOne Firebase: ${sha ? 'update' : 'create'} ${path}`, content: Buffer.from(content, 'utf8').toString('base64'), branch };
   if (sha) body.sha = sha;
   const r = await gh(url, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   if (!r.ok) throw new Error(`GitHub ${path}: ${r.status} ${await r.text()}`);
@@ -75,6 +72,22 @@ async function requireKey(req) {
   }
 }
 
+function isPrivateIp(ip) {
+  const v = String(ip || '').toLowerCase();
+  if (v === '::1' || v === 'localhost') return true;
+  if (/^127\./.test(v) || /^10\./.test(v) || /^192\.168\./.test(v) || /^169\.254\./.test(v)) return true;
+  const m = v.match(/^172\.(\d+)\./); if (m && Number(m[1]) >= 16 && Number(m[1]) <= 31) return true;
+  if (v === '0.0.0.0' || v.startsWith('::ffff:127.') || v.startsWith('fc') || v.startsWith('fd') || v.startsWith('fe80:')) return true;
+  return false;
+}
+
+async function validatePublicDomain(domain) {
+  if (!/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(domain)) throw new Error('Invalid developer domain');
+  if (domain === 'localhost' || domain.endsWith('.localhost') || domain.endsWith('.local') || domain.endsWith('.internal')) throw new Error('Private/local domains are not allowed');
+  const answers = await dns.lookup(domain, { all: true, verbatim: true });
+  if (!answers.length || answers.some(x => isPrivateIp(x.address))) throw new Error('Developer domain resolves to a private/local address');
+}
+
 exports.buildoneApi = onRequest({ cors: true, secrets: [GITHUB_TOKEN, BUILDONE_API_KEY], timeoutSeconds: 120 }, async (req, res) => {
   try {
     await requireKey(req);
@@ -97,11 +110,7 @@ exports.buildoneApi = onRequest({ cors: true, secrets: [GITHUB_TOKEN, BUILDONE_A
         const sha = await putFile(owner, repo, path, content, branch);
         if (path === '.buildone/trigger.json') triggerSha = sha;
       }
-      await db.collection('builds').doc(requestId).set({
-        requestId, owner, repo, branch, packageId: p.packageId,
-        appName: nameSafe(p.appName), buildType: p.buildType === 'AAB' ? 'AAB' : 'APK',
-        status: 'QUEUED', triggerSha, createdAt: FieldValue.serverTimestamp()
-      });
+      await db.collection('builds').doc(requestId).set({ requestId, owner, repo, branch, packageId: p.packageId, appName: nameSafe(p.appName), buildType: p.buildType === 'AAB' ? 'AAB' : 'APK', status: 'QUEUED', triggerSha, createdAt: FieldValue.serverTimestamp() });
       res.status(202).json({ ok: true, id: requestId, owner, repo, branch, type: p.buildType === 'AAB' ? 'AAB' : 'APK', triggerSha, trigger: 'push' }); return;
     }
 
@@ -148,14 +157,15 @@ exports.buildoneApi = onRequest({ cors: true, secrets: [GITHUB_TOKEN, BUILDONE_A
 
     if (req.method === 'GET' && u.pathname === '/artifact') {
       const owner = u.searchParams.get('owner'), repo = u.searchParams.get('repo'), id = u.searchParams.get('artifact_id');
-      if (!owner || !repo || !id) throw new Error('artifact parameters required');
+      if (!owner || !repo || !id || !/^\d+$/.test(id)) throw new Error('artifact parameters required');
       const meta = await gh(`${GH}/repos/${owner}/${repo}/actions/artifacts/${id}`);
       if (!meta.ok) throw new Error(`artifact verification failed: ${meta.status}`);
       const m = await meta.json();
-      if (m.expired || !m.size_in_bytes) throw new Error('Artifact is missing, expired, or empty');
+      if (m.expired || !m.size_in_bytes || !m.workflow_run?.id) throw new Error('Artifact is missing, expired, empty, or not tied to a workflow run');
       const x = await gh(`${GH}/repos/${owner}/${repo}/actions/artifacts/${id}/zip`);
       if (!x.ok) throw new Error(`artifact download failed: ${x.status}`);
       const buf = Buffer.from(await x.arrayBuffer());
+      if (!buf.length) throw new Error('Artifact download is empty');
       res.set('Content-Type', 'application/zip');
       res.set('Content-Disposition', 'attachment; filename="buildone-artifact.zip"');
       res.set('Content-Length', String(buf.length));
@@ -165,15 +175,23 @@ exports.buildoneApi = onRequest({ cors: true, secrets: [GITHUB_TOKEN, BUILDONE_A
     if (req.method === 'GET' && u.pathname === '/verify-app-ads-txt') {
       const domain = String(u.searchParams.get('domain') || '').trim().replace(/^https?:\/\//i, '').replace(/\/.*$/, '').toLowerCase();
       const publisherId = String(u.searchParams.get('publisherId') || '').trim();
-      if (!/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(domain)) throw new Error('Invalid developer domain');
       if (!publisherOk(publisherId)) throw new Error('Invalid Publisher ID. Expected pub-XXXXXXXXXXXXXXXX');
+      await validatePublicDomain(domain);
       const expected = `google.com, ${publisherId}, DIRECT, f08c47fec0942fa0`;
       const target = `https://${domain}/app-ads.txt`;
-      const r = await fetch(target, { redirect: 'follow', headers: { 'User-Agent': 'BuildOne-AppAdsTxt-Verify/1.0' } });
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10000);
+      let r;
+      try {
+        r = await fetch(target, { redirect: 'follow', signal: controller.signal, headers: { 'User-Agent': 'BuildOne-AppAdsTxt-Verify/1.0', 'Accept': 'text/plain,text/*;q=0.9,*/*;q=0.1' } });
+      } finally { clearTimeout(timer); }
       if (!r.ok) {
         res.status(200).json({ ok: true, verified: false, domain, url: target, expected, error: `HTTP ${r.status}` }); return;
       }
+      const len = Number(r.headers.get('content-length') || 0);
+      if (len > 1024 * 1024) throw new Error('app-ads.txt is too large');
       const text = await r.text();
+      if (text.length > 1024 * 1024) throw new Error('app-ads.txt is too large');
       const lines = text.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
       const normalized = lines.map(x => x.replace(/\s+/g, ' '));
       const verified = normalized.some(x => x === expected);
@@ -185,6 +203,6 @@ exports.buildoneApi = onRequest({ cors: true, secrets: [GITHUB_TOKEN, BUILDONE_A
     }
     res.json({ ok: true, service: 'BuildOne Firebase API' });
   } catch (e) {
-    res.status(e.status || 400).json({ ok: false, error: e.message || String(e) });
+    res.status(e.status || 400).json({ ok: false, error: e.name === 'AbortError' ? 'Verification timeout' : (e.message || String(e)) });
   }
 });
