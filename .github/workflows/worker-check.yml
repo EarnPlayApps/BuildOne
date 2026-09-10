@@ -1,0 +1,26 @@
+name: BuildOne Worker Check
+on:
+  push:
+    paths:
+      - 'worker/**'
+      - '.github/workflows/worker-check.yml'
+  pull_request:
+    paths:
+      - 'worker/**'
+      - '.github/workflows/worker-check.yml'
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Syntax check
+        run: node --check worker/src/index.js
+      - name: Wrangler configuration check
+        run: |
+          test -s worker/wrangler.toml
+          grep -q 'src/index.js' worker/wrangler.toml
