@@ -1,0 +1,6 @@
+name = "buildone-broker"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+
+[vars]
+# Optional: configure BUILDONE_KEY with `wrangler secret put BUILDONE_KEY`.
