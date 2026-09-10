@@ -12,6 +12,7 @@ const GH = 'https://api.github.com';
 const repoOk = x => /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(x || '');
 const pkgOk = x => /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$/.test(x || '');
 const nameSafe = x => String(x || 'BuildOne App').replace(/[<>:"/\\|?*\x00-\x1F]/g, '').trim().slice(0, 60) || 'BuildOne App';
+const publisherOk = x => /^pub-\d{16}$/.test(String(x || '').trim());
 
 function ghHeaders() {
   return {
@@ -110,7 +111,19 @@ exports.buildoneApi = onRequest({ cors: true, secrets: [GITHUB_TOKEN, BUILDONE_A
       const id = u.searchParams.get('run_id');
       if (!owner || !repo) throw new Error('owner and repo required');
       let run = null;
+      let buildDoc = null;
       if (id) {
+        const snap = await db.collection('builds').where('requestId', '==', String(id)).limit(1).get();
+        if (!snap.empty) buildDoc = snap.docs[0].data();
+      }
+      if (buildDoc?.triggerSha) {
+        const x = await gh(`${GH}/repos/${owner}/${repo}/actions/runs?event=push&per_page=30`);
+        if (x.ok) {
+          const d = await x.json();
+          run = d.workflow_runs?.find(x => x.path?.endsWith('/buildone.yml') && x.head_sha === buildDoc.triggerSha) || null;
+        }
+      }
+      if (!run && id && /^\d+$/.test(String(id))) {
         const x = await gh(`${GH}/repos/${owner}/${repo}/actions/runs/${encodeURIComponent(id)}`);
         if (x.ok) run = await x.json();
       }
@@ -147,6 +160,24 @@ exports.buildoneApi = onRequest({ cors: true, secrets: [GITHUB_TOKEN, BUILDONE_A
       res.set('Content-Disposition', 'attachment; filename="buildone-artifact.zip"');
       res.set('Content-Length', String(buf.length));
       res.status(200).send(buf); return;
+    }
+
+    if (req.method === 'GET' && u.pathname === '/verify-app-ads-txt') {
+      const domain = String(u.searchParams.get('domain') || '').trim().replace(/^https?:\/\//i, '').replace(/\/.*$/, '').toLowerCase();
+      const publisherId = String(u.searchParams.get('publisherId') || '').trim();
+      if (!/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(domain)) throw new Error('Invalid developer domain');
+      if (!publisherOk(publisherId)) throw new Error('Invalid Publisher ID. Expected pub-XXXXXXXXXXXXXXXX');
+      const expected = `google.com, ${publisherId}, DIRECT, f08c47fec0942fa0`;
+      const target = `https://${domain}/app-ads.txt`;
+      const r = await fetch(target, { redirect: 'follow', headers: { 'User-Agent': 'BuildOne-AppAdsTxt-Verify/1.0' } });
+      if (!r.ok) {
+        res.status(200).json({ ok: true, verified: false, domain, url: target, expected, error: `HTTP ${r.status}` }); return;
+      }
+      const text = await r.text();
+      const lines = text.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+      const normalized = lines.map(x => x.replace(/\s+/g, ' '));
+      const verified = normalized.some(x => x === expected);
+      res.status(200).json({ ok: true, verified, domain, url: target, expected, found: verified ? expected : null, lineCount: lines.length }); return;
     }
 
     if (req.method === 'GET' && u.pathname === '/health') {
