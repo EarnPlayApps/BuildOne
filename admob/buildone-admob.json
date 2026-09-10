@@ -1,0 +1,7 @@
+{
+  "appId": "ca-app-pub-9940728659432865~7416412396",
+  "bannerAdUnitId": "ca-app-pub-9940728659432865/5564274675",
+  "interstitialAdUnitId": "ca-app-pub-9940728659432865/4251193002",
+  "formats": ["banner", "interstitial"],
+  "sdk": "com.google.android.gms:play-services-ads:25.4.0"
+}
