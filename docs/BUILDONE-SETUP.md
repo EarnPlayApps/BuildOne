@@ -5,7 +5,7 @@ BuildOne is the only product name used by this project. The repository is `EarnP
 ## Core services
 
 - **Cloudflare Worker:** BuildOne API layer, exact build tracking, artifact gate and app-ads.txt verification.
-- **GitHub Actions:** BuildOne Android build engine using JDK 17, Gradle 8.7, AGP 8.6.1 and Android SDK 35/minSdk 23.
+- **GitHub Actions:** BuildOne Android build engine using JDK 17, Gradle 8.7, AGP 8.6.1 and Android 16/API 36 for new mobile Play releases.
 - **Supabase:** optional persistent database for BuildOne. Use a dedicated BuildOne Supabase project; do not point BuildOne at an unrelated project.
 - **Firebase / FlutterFlow:** not required by the BuildOne core pipeline.
 
@@ -39,6 +39,7 @@ A BuildOne download is valid only after all of these are true:
 4. The run conclusion is `success`.
 5. The artifact exists, is non-empty, is not expired, and its type matches APK/AAB.
 6. The artifact is associated with the exact workflow run and commit.
+7. The safety gate has passed.
 
 The UI must not show a verified download when any gate is missing.
 
@@ -53,6 +54,14 @@ The publisher entry must be hosted publicly at `https://YOUR-DOMAIN/app-ads.txt`
 ## Backup / rollback
 
 BuildOne backs up the project before repair or build preparation. Migration/repair/build failures must leave the previous backup available for rollback.
+
+## User safety
+
+BuildOne uses bounded retries, plain-language errors, secret protection, permission minimisation, automatic backup before destructive changes and rollback when safe. It must never claim universal automatic recovery for failures outside its control.
+
+## Legal release gate
+
+Production publishing requires completed `legal/CONTACT-CONFIG.md`, a public HTTPS Privacy Policy and Terms URL, matching data-flow disclosures, applicable Google Play Data Safety declarations, required advertising disclosures and the applicable platform target API.
 
 ## Migration scope
 
