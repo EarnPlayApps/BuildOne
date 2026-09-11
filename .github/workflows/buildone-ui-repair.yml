@@ -1,0 +1,65 @@
+name: BuildOne UI Repair
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'index.html'
+      - '.github/workflows/buildone-ui-repair.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.event_name == 'workflow_dispatch' || github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Repair BuildOne UI contracts
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          p=Path('index.html')
+          s=p.read_text()
+          if 'id="adInterstitial"' not in s:
+              needle='id="adBanner"'
+              pos=s.find(needle)
+              if pos>=0:
+                  end=s.find('>',pos)
+                  if end>=0:
+                      end+=1
+                      s=s[:end]+'<input id="adInterstitial" placeholder="Interstitial Ad Unit ID" />'+s[end:]
+          old="const a=$('adApp').value.trim(),b=$('adBanner').value.trim(),ok=/^ca-app-pub-\\d{16}~\\d{10}$/.test(a)&&/^ca-app-pub-\\d{16}\\/\\d{10}$/.test(b);state.admob={app:a,banner:b,valid:ok};"
+          new="const a=$('adApp').value.trim(),b=$('adBanner').value.trim(),i=$('adInterstitial')?.value.trim()||'',ok=/^ca-app-pub-\\d{16}~\\d{10}$/.test(a)&&/^ca-app-pub-\\d{16}\\/\\d{10}$/.test(b)&&/^ca-app-pub-\\d{16}\\/\\d{10}$/.test(i);state.admob={app:a,banner:b,interstitial:i,valid:ok};"
+          if old in s: s=s.replace(old,new)
+          if 'adInterstitial' in s and "$('adInterstitial').value=state.admob.interstitial||''" not in s:
+              marker="$('adBanner').value=state.admob.banner||''"
+              if marker in s: s=s.replace(marker,marker+";if($('adInterstitial'))$('adInterstitial').value=state.admob.interstitial||''")
+          old2="location.href=state.connection.worker.replace(/\\/$/,'')+'/artifact?owner='+encodeURIComponent(o)+'&repo='+encodeURIComponent(r)+'&artifact_id='+encodeURIComponent(state.artifact.id)"
+          new2="location.href=state.connection.worker.replace(/\\/$/,'')+'/artifact?owner='+encodeURIComponent(o)+'&repo='+encodeURIComponent(r)+'&artifact_id='+encodeURIComponent(state.artifact.id)+'&run_id='+encodeURIComponent(state.artifact.run_id||state.artifact.runId||'')+'&type='+encodeURIComponent(state.artifact.type||state.buildType||'APK')"
+          if old2 in s: s=s.replace(old2,new2)
+          s=s.replace("state.artifact=a;", "state.artifact=a;state.artifact.run_id=a.run_id||a.runId||state.artifact.run_id;state.artifact.type=a.type||state.artifact.type||state.buildType||'APK';")
+          s=s.replace('Firebase URL required','Cloudflare Worker URL required')
+          s=s.replace('Firebase backend OK.','BuildOne Worker backend OK.')
+          p.write_text(s)
+          PY
+      - name: Validate and remove repair workflow
+        run: |
+          test -s index.html
+          python3 - <<'PY'
+          from pathlib import Path
+          s=Path('index.html').read_text()
+          assert 'adInterstitial' in s
+          assert 'run_id' in s
+          print('BuildOne UI repair checks passed')
+          PY
+          rm -f .github/workflows/buildone-ui-repair.yml
+      - name: Commit repaired UI
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add index.html .github/workflows/buildone-ui-repair.yml
+          git diff --cached --quiet || git commit -m 'BuildOne: complete UI AdMob and artifact gate integration'
+          git push
