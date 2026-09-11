@@ -52,6 +52,14 @@ jobs:
           unzip -q /tmp/gradle.zip -d /tmp
           echo "/tmp/gradle-8.7/bin" >> "$GITHUB_PATH"
           gradle --version
+      - name: Normalize BuildOne Android target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f app/build.gradle
+          sed -i -E 's/compileSdk[[:space:]]+35/compileSdk 36/g; s/targetSdk[[:space:]]+35/targetSdk 36/g' app/build.gradle
+          grep -Eq 'compileSdk[[:space:]]+36' app/build.gradle
+          grep -Eq 'targetSdk[[:space:]]+36' app/build.gradle
       - name: Build Gate
         shell: bash
         run: |
@@ -66,11 +74,20 @@ jobs:
           python3 - <<'PY'
           import re
           p=open('app/build.gradle').read()
-          for key,minimum in [('compileSdk',35),('minSdk',23),('targetSdk',35)]:
+          for key,minimum in [('compileSdk',36),('minSdk',23),('targetSdk',36)]:
               m=re.search(r'\b'+key+r'\s+(\d+)',p)
               assert m and int(m.group(1))>=minimum, key+' compatibility gate failed'
           print('BuildOne compatibility gate PASS')
           PY
+      - name: BuildOne safety gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s legal/PRIVACY-POLICY.md
+          test -s legal/TERMS-OF-SERVICE.md
+          test -s legal/COMPLIANCE-MATRIX.md
+          test -s docs/USER-SAFETY-AND-RECOVERY.md
+          if grep -RInE 'BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY|ghp_[A-Za-z0-9]{20,}' --exclude-dir=.git .; then exit 1; fi
       - name: Prepare release signing
         if: steps.request.outputs.sign == 'signed'
         env:
