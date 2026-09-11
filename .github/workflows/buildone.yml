@@ -3,8 +3,7 @@ name: BuildOne Real Android Build
 on:
   push:
     branches: [main]
-    paths:
-      - '.buildone/trigger.json'
+    paths: ['.buildone/trigger.json']
   workflow_dispatch:
     inputs:
       build_type:
@@ -26,12 +25,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Checkout exact commit
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-      - name: Setup Java 17
-        uses: actions/setup-java@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
@@ -43,10 +38,14 @@ jobs:
           set -euo pipefail
           test -s .buildone/trigger.json
           TYPE=$(python3 -c "import json; print(json.load(open('.buildone/trigger.json'))['build_type'])")
-          case "$TYPE" in APK|AAB) ;; *) echo "Invalid build_type: $TYPE"; exit 1;; esac
+          SIGN=$(python3 -c "import json; print(json.load(open('.buildone/trigger.json')).get('signing_mode','unsigned'))")
+          BUILD_ID=$(python3 -c "import json; print(json.load(open('.buildone/trigger.json'))['build_id'])")
+          case "$TYPE" in APK|AAB) ;; *) exit 1;; esac
+          case "$SIGN" in unsigned|signed) ;; *) exit 1;; esac
           echo "type=$TYPE" >> "$GITHUB_OUTPUT"
+          echo "sign=$SIGN" >> "$GITHUB_OUTPUT"
+          echo "build_id=$BUILD_ID" >> "$GITHUB_OUTPUT"
       - name: Install compatible Gradle 8.7
-        shell: bash
         run: |
           set -euo pipefail
           curl -fsSL https://services.gradle.org/distributions/gradle-8.7-bin.zip -o /tmp/gradle.zip
@@ -57,26 +56,44 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -f settings.gradle
-          test -f build.gradle
-          test -f gradle.properties
-          test -f app/build.gradle
-          test -f app/src/main/AndroidManifest.xml
+          test -f settings.gradle && test -f build.gradle && test -f gradle.properties
+          test -f app/build.gradle && test -f app/src/main/AndroidManifest.xml
           test -s app/src/main/assets/index.html
-          grep -q "com.android.application" build.gradle
           grep -q "play-services-ads:25.4.0" app/build.gradle
           grep -q "com.google.android.gms.ads.APPLICATION_ID" app/src/main/AndroidManifest.xml
           grep -q "ca-app-pub-9940728659432865~7416412396" app/src/main/AndroidManifest.xml
-          if grep -Eqi '<uses-sdk|targetSdkVersion|minSdkVersion' app/src/main/assets/index.html; then echo 'SDK metadata leaked into WebView asset'; exit 1; fi
+          if grep -Eqi '<uses-sdk|targetSdkVersion|minSdkVersion' app/src/main/assets/index.html; then echo "SDK metadata leaked"; exit 1; fi
           python3 - <<'PY'
           import re
           p=open('app/build.gradle').read()
           for key,minimum in [('compileSdk',35),('minSdk',23),('targetSdk',35)]:
               m=re.search(r'\b'+key+r'\s+(\d+)',p)
               assert m and int(m.group(1))>=minimum, key+' compatibility gate failed'
-          print('Compatibility gate PASS: JDK17 / Gradle8.7 / AGP8.6.1 / SDK35 / min23')
+          print('BuildOne compatibility gate PASS')
+          PY
+      - name: Prepare release signing
+        if: steps.request.outputs.sign == 'signed'
+        env:
+          KS: ${{ secrets.BUILDONE_KEYSTORE_BASE64 }}
+          KP: ${{ secrets.BUILDONE_KEYSTORE_PASSWORD }}
+          KA: ${{ secrets.BUILDONE_KEY_ALIAS }}
+          KPP: ${{ secrets.BUILDONE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$KS" && test -n "$KP" && test -n "$KA" && test -n "$KPP"
+          printf '%s' "$KS" | base64 --decode > app/buildone-release.keystore
+          python3 - <<'PY'
+          p=open('app/build.gradle').read()
+          old="buildTypes { release { minifyEnabled false;"
+          new="signingConfigs { release { storeFile file('buildone-release.keystore'); storePassword System.getenv('BUILDONE_KEYSTORE_PASSWORD'); keyAlias System.getenv('BUILDONE_KEY_ALIAS'); keyPassword System.getenv('BUILDONE_KEY_PASSWORD') } } buildTypes { release { signingConfig signingConfigs.release; minifyEnabled false;"
+          assert old in p
+          open('app/build.gradle','w').write(p.replace(old,new,1))
           PY
       - name: Real Gradle build
+        env:
+          BUILDONE_KEYSTORE_PASSWORD: ${{ secrets.BUILDONE_KEYSTORE_PASSWORD }}
+          BUILDONE_KEY_ALIAS: ${{ secrets.BUILDONE_KEY_ALIAS }}
+          BUILDONE_KEY_PASSWORD: ${{ secrets.BUILDONE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
           if [ "${{ steps.request.outputs.type }}" = "AAB" ]; then gradle bundleRelease --no-daemon --stacktrace; else gradle assembleRelease --no-daemon --stacktrace; fi
@@ -85,6 +102,7 @@ jobs:
         run: |
           set -euo pipefail
           TYPE="${{ steps.request.outputs.type }}"
+          ID="${{ steps.request.outputs.build_id }}"
           if [ "$TYPE" = "AAB" ]; then FILE=$(find app/build/outputs/bundle -type f -name '*.aab' -print -quit); else FILE=$(find app/build/outputs/apk -type f -name '*.apk' -print -quit); fi
           test -n "$FILE" && test -f "$FILE" && test -s "$FILE"
           case "$FILE" in *.aab) [ "$TYPE" = AAB ];; *.apk) [ "$TYPE" = APK ];; *) exit 1;; esac
@@ -94,12 +112,14 @@ jobs:
           printf '%s  %s\n' "$SHA" "$FILE" > artifact.sha256
           python3 - <<PY
           import json
-          data={'build_id':'${{ github.run_id }}','type':'$TYPE','size':$SIZE,'sha256':'$SHA','commit':'${{ github.sha }}','workflow':'${{ github.workflow }}','run_number':${{ github.run_number }},'artifact_file':'$FILE'}
+          data={'build_id':'$ID','type':'$TYPE','size':$SIZE,'sha256':'$SHA','commit':'${{ github.sha }}','workflow':'${{ github.workflow }}','run_number':${{ github.run_number }},'run_id':${{ github.run_id }},'artifact_file':'$FILE'}
           open('buildone-artifact.json','w').write(json.dumps(data,indent=2)+'\n')
           print(json.dumps(data,indent=2))
           PY
-      - name: Upload verified artifact bundle
-        uses: actions/upload-artifact@v4
+      - name: Remove signing material
+        if: always()
+        run: rm -f app/buildone-release.keystore
+      - uses: actions/upload-artifact@v4
         with:
           name: buildone-${{ steps.request.outputs.type }}-${{ github.run_id }}
           path: |
