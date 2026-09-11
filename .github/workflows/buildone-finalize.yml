@@ -1,0 +1,66 @@
+name: BuildOne Finalize Core
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.buildone/finalize.trigger'
+permissions:
+  contents: write
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Finalize BuildOne core
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('index.html')
+          s=p.read_text()
+          old="function gate(){return [['Project valid',/^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)+$/.test(state.project.packageId)],['HTML exists',!!state.html],['Analyzer clear',!(state.analysis?.errors?.length)],['Backup exists',!!state.backup],['Compatible profile',true],['Firebase configured',!!state.connection.worker],['Repository configured',!!state.connection.repo],['Verified artifact',!!state.artifact],['AdMob valid',!!state.admob?.valid],['app-ads.txt verified',!!state.appAds?.verified]]}"
+          new="function gate(){const a=state.artifact||{};return [['Project valid',/^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)+$/.test(state.project.packageId)],['HTML exists',!!state.html],['Analyzer clear',!(state.analysis?.errors?.length)],['Backup exists',!!state.backup],['Compatible profile',true],['Worker configured',!!state.connection.worker],['Repository configured',!!state.connection.repo],['Verified artifact',!!(a.id&&a.run_id&&a.type&&a.verified)],['AdMob valid',!!state.admob?.valid],['app-ads.txt verified',!!state.appAds?.verified]]}"
+          s=s.replace(old,new)
+          s=s.replace("state.artifact=a;state.artifact.run_id=a.run_id||a.runId||state.artifact.run_id;state.artifact.type=a.type||state.artifact.type||state.buildType||'APK';state.artifact.run_id=a.run_id||a.runId||state.artifact.run_id;state.artifact.type=a.type||state.artifact.type||state.buildType||'APK';b.status='VERIFIED';","state.artifact={...a,run_id:a.run_id||a.runId||state.run?.id,type:a.type||state.buildType||'APK',verified:true,verifiedAt:new Date().toISOString()};b.artifact=state.artifact;b.status='VERIFIED';")
+          s=s.replace("$('adBanner').value=state.admob?.banner||'';","$('adBanner').value=state.admob?.banner||'';$('adInterstitial').value=state.admob?.interstitial||'';")
+          s=s.replace("Firebase build request failed","Cloudflare Worker build request failed")
+          s=s.replace("Firebase HTTP '+r.status","Worker HTTP '+r.status")
+          s=s.replace("function downloadArtifact(){if(!state.artifact||!state.artifact.id||!state.artifact.run_id||!state.artifact.type){alert('Artifact metadata incomplete. Build and verify again.');return;}","function downloadArtifact(){if(!state.artifact||!state.artifact.id||!state.artifact.run_id||!state.artifact.type||!state.artifact.verified){alert('Download blocked: artifact is not fully verified.');return;}")
+          s=s.replace("+'&run_id='+encodeURIComponent(state.artifact.run_id||state.artifact.runId||'')+'&type='+encodeURIComponent(state.artifact.type||state.buildType||'APK')+'&run_id='+encodeURIComponent(state.artifact.run_id||state.artifact.runId||'')+'&type='+encodeURIComponent(state.artifact.type||state.buildType||'APK')","+'&run_id='+encodeURIComponent(state.artifact.run_id)+'&type='+encodeURIComponent(state.artifact.type)")
+          p.write_text(s)
+          PY
+          cat > docs/FINAL-STATUS.md <<'MD'
+# BuildOne v1.0 — Final implementation status
+
+BuildOne is a real Android build system. The UI is not allowed to report a verified artifact unless artifact ID, run ID, type and verification state are present.
+
+## Live core
+- HTML → APK
+- HTML → AAB
+- Android project generation
+- JDK 17 / Gradle 8.7 / AGP 8.6.1 compatibility profile
+- Build Gate
+- Real GitHub Actions Gradle build
+- APK/AAB artifact verification
+- SHA-256/size metadata
+- AdMob App ID + Banner + Interstitial validation/injection
+- app-ads.txt generation/verification route
+- Backup / rollback in local project state
+- Auto Build pipeline
+- Cloudflare Worker backend
+
+## Configuration required for a real deployment
+- Deploy the Worker and configure `GITHUB_TOKEN` (and optional `BUILDONE_KEY`).
+- Set the Worker URL in BuildOne → GitHub CI/CD.
+- Configure the public developer domain and publish the exact `app-ads.txt` line.
+- Configure release signing/keystore outside the browser before production release.
+
+## Not falsely marked live
+Firebase files remain optional infrastructure and are not reported as deployed. Advanced enterprise features such as Play Console automated publishing, multi-project cloud persistence, and full migration automation require their external credentials/services and are intentionally gated rather than faked.
+MD
+          git config user.name 'BuildOne Bot'
+          git config user.email 'buildone-bot@users.noreply.github.com'
+          git add index.html docs/FINAL-STATUS.md
+          git commit -m 'BuildOne: finalize core gates and artifact state [buildone-finalized]'
+          git push
