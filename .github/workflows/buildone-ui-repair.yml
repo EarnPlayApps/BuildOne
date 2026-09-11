@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
     paths:
+      - '.github/workflows/buildone-ui-repair.yml'
       - 'index.html'
   workflow_dispatch:
 
@@ -22,54 +23,28 @@ jobs:
           from pathlib import Path
           p=Path('index.html')
           s=p.read_text()
-
-          # Add Interstitial field beside Banner if absent.
           if 'id="adInterstitial"' not in s:
-              s=s.replace('id="adBanner"', 'id="adBanner"')
-              needle='id="adBanner"'
-              pos=s.find(needle)
+              needle='id="adBanner"'; pos=s.find(needle)
               if pos>=0:
                   end=s.find('>',pos)
-                  if end>=0:
-                      end+=1
-                      s=s[:end]+'<input id="adInterstitial" placeholder="Interstitial Ad Unit ID" />'+s[end:]
-
-          old="const a=$('adApp').value.trim(),b=$('adBanner').value.trim(),ok=/^ca-app-pub-\\d{16}~\\d{10}$/.test(a)&&/^ca-app-pub-\\d{16}\\/\\d{10}$/.test(b);state.admob={app:a,banner:b,valid:ok};"
-          new="const a=$('adApp').value.trim(),b=$('adBanner').value.trim(),i=$('adInterstitial')?.value.trim()||'',ok=/^ca-app-pub-\\d{16}~\\d{10}$/.test(a)&&/^ca-app-pub-\\d{16}\\/\\d{10}$/.test(b)&&/^ca-app-pub-\\d{16}\\/\\d{10}$/.test(i);state.admob={app:a,banner:b,interstitial:i,valid:ok};"
+                  if end>=0: s=s[:end+1]+'<input id="adInterstitial" placeholder="Interstitial Ad Unit ID" />'+s[end+1:]
+          s=s.replace("state.admob={app:a,banner:b,valid:ok};", "state.admob={app:a,banner:b,interstitial:i,valid:ok};")
+          s=s.replace("const a=$('adApp').value.trim(),b=$('adBanner').value.trim(),ok=/^ca-app-pub-\\d{16}~\\d{10}$/.test(a)&&/^ca-app-pub-\\d{16}\\/\\d{10}$/.test(b);", "const a=$('adApp').value.trim(),b=$('adBanner').value.trim(),i=$('adInterstitial')?.value.trim()||'',ok=/^ca-app-pub-\\d{16}~\\d{10}$/.test(a)&&/^ca-app-pub-\\d{16}\\/\\d{10}$/.test(b)&&/^ca-app-pub-\\d{16}\\/\\d{10}$/.test(i);")
+          marker="$('adBanner').value=state.admob.banner||''"
+          if 'adInterstitial' in s and "$('adInterstitial').value=state.admob.interstitial||''" not in s and marker in s:
+              s=s.replace(marker,marker+";if($('adInterstitial'))$('adInterstitial').value=state.admob.interstitial||''")
+          old="location.href=state.connection.worker.replace(/\\/$/,'')+'/artifact?owner='+encodeURIComponent(o)+'&repo='+encodeURIComponent(r)+'&artifact_id='+encodeURIComponent(state.artifact.id)"
+          new="location.href=state.connection.worker.replace(/\\/$/,'')+'/artifact?owner='+encodeURIComponent(o)+'&repo='+encodeURIComponent(r)+'&artifact_id='+encodeURIComponent(state.artifact.id)+'&run_id='+encodeURIComponent(state.artifact.run_id||state.artifact.runId||'')+'&type='+encodeURIComponent(state.artifact.type||state.buildType||'APK')"
           if old in s: s=s.replace(old,new)
-          else:
-              s=s.replace("state.admob={app:a,banner:b,valid:ok};", "state.admob={app:a,banner:b,interstitial:i,valid:ok};") if "const a=$('adApp').value.trim(),b=$('adBanner').value.trim()" in s else s
-
-          # Ensure persisted interstitial is rendered when the field exists.
-          if 'adInterstitial' in s and "$('adInterstitial').value=state.admob.interstitial||''" not in s:
-              marker="$('adBanner').value=state.admob.banner||''"
-              if marker in s: s=s.replace(marker, marker+";if($('adInterstitial'))$('adInterstitial').value=state.admob.interstitial||''")
-
-          # Strict artifact download contract: require run_id and type.
-          old2="location.href=state.connection.worker.replace(/\\/$/,'')+'/artifact?owner='+encodeURIComponent(o)+'&repo='+encodeURIComponent(r)+'&artifact_id='+encodeURIComponent(state.artifact.id)"
-          new2="location.href=state.connection.worker.replace(/\\/$/,'')+'/artifact?owner='+encodeURIComponent(o)+'&repo='+encodeURIComponent(r)+'&artifact_id='+encodeURIComponent(state.artifact.id)+'&run_id='+encodeURIComponent(state.artifact.run_id||state.artifact.runId||'')+'&type='+encodeURIComponent(state.artifact.type||state.buildType||'APK')"
-          if old2 in s: s=s.replace(old2,new2)
-
-          # Preserve strict artifact metadata returned by status.
           s=s.replace("state.artifact=a;", "state.artifact=a;state.artifact.run_id=a.run_id||a.runId||state.artifact.run_id;state.artifact.type=a.type||state.artifact.type||state.buildType||'APK';")
-
-          # Fix old Firebase wording in connection status to match current Worker architecture.
-          s=s.replace('Firebase URL required','Cloudflare Worker URL required')
-          s=s.replace('Firebase backend OK.','BuildOne Worker backend OK.')
-
+          s=s.replace('Firebase URL required','Cloudflare Worker URL required').replace('Firebase backend OK.','BuildOne Worker backend OK.')
           p.write_text(s)
           PY
-      - name: Validate HTML and remove repair workflow
+      - name: Validate and self remove
         run: |
           test -s index.html
-          python3 - <<'PY'
-          from pathlib import Path
-          s=Path('index.html').read_text()
-          assert 'adInterstitial' in s
-          assert 'run_id' in s
-          assert 'artifact' in s
-          print('BuildOne UI repair checks passed')
-          PY
+          grep -q 'adInterstitial' index.html
+          grep -q 'run_id' index.html
           rm -f .github/workflows/buildone-ui-repair.yml
       - name: Commit repaired UI
         run: |
