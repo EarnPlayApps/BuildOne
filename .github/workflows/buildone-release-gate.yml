@@ -1,0 +1,59 @@
+name: BuildOne Release Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      production:
+        description: 'Run strict production release gate'
+        required: true
+        default: 'true'
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: BuildOne Production Safety Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Required BuildOne files
+        run: |
+          set -euo pipefail
+          test -s README.md
+          test -s legal/PRIVACY-POLICY.md
+          test -s legal/TERMS-OF-SERVICE.md
+          test -s legal/CONTACT-CONFIG.md
+          test -s legal/COMPLIANCE-MATRIX.md
+          test -s docs/USER-SAFETY-AND-RECOVERY.md
+      - name: No public secret material
+        run: |
+          set -euo pipefail
+          if grep -RInE 'BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY|BUILDONE_KEYSTORE_PASSWORD=[^$]|SUPABASE_SERVICE_ROLE_KEY[[:space:]]*[:=][[:space:]]*ey|ghp_[A-Za-z0-9]{20,}' --exclude-dir=.git .; then
+            echo 'Potential secret material found'; exit 1
+          fi
+      - name: Android 16 target gate
+        run: |
+          set -euo pipefail
+          grep -Eq 'compileSdk[[:space:]]+36' android-template/app/build.gradle
+          grep -Eq 'targetSdk[[:space:]]+36' android-template/app/build.gradle
+      - name: Legal configuration gate
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import re
+          p=open('legal/CONTACT-CONFIG.md',encoding='utf8').read()
+          required=['operator_name','registered_address','privacy_email','support_email','security_email','privacy_policy_url','terms_url','app_support_url','last_legal_review']
+          missing=[]
+          for k in required:
+              m=re.search(r'^'+re.escape(k)+r':\s*"([^"]*)"\s*$',p,re.M)
+              if not m or not m.group(1).strip(): missing.append(k)
+          if missing:
+              print('Production blocked until legal contact config is completed:', ', '.join(missing))
+              raise SystemExit(2)
+          for k in ['privacy_policy_url','terms_url','app_support_url']:
+              m=re.search(r'^'+re.escape(k)+r':\s*"([^"]+)"\s*$',p,re.M)
+              if not m.group(1).startswith('https://'): raise SystemExit(f'{k} must use HTTPS')
+          print('BuildOne legal configuration PASS')
+          PY
