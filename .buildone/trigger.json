@@ -1,6 +1,6 @@
 {
-  "build_id": "buildone-final-apk-20260911",
-  "build_type": "APK",
+  "build_id": "buildone-final-aab-20260911",
+  "build_type": "AAB",
   "signing_mode": "unsigned",
-  "requested_at": "2026-09-11T08:20:00+08:00"
+  "requested_at": "2026-09-11T08:19:00+08:00"
 }
