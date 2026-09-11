@@ -25,8 +25,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
@@ -45,12 +45,12 @@ jobs:
           echo "type=$TYPE" >> "$GITHUB_OUTPUT"
           echo "sign=$SIGN" >> "$GITHUB_OUTPUT"
           echo "build_id=$BUILD_ID" >> "$GITHUB_OUTPUT"
-      - name: Install compatible Gradle 8.7
+      - name: Install compatible Gradle 8.11.1
         run: |
           set -euo pipefail
-          curl -fsSL https://services.gradle.org/distributions/gradle-8.7-bin.zip -o /tmp/gradle.zip
+          curl -fsSL https://services.gradle.org/distributions/gradle-8.11.1-bin.zip -o /tmp/gradle.zip
           unzip -q /tmp/gradle.zip -d /tmp
-          echo "/tmp/gradle-8.7/bin" >> "$GITHUB_PATH"
+          echo "/tmp/gradle-8.11.1/bin" >> "$GITHUB_PATH"
           gradle --version
       - name: Normalize BuildOne Android target
         shell: bash
@@ -136,7 +136,7 @@ jobs:
       - name: Remove signing material
         if: always()
         run: rm -f app/buildone-release.keystore
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: buildone-${{ steps.request.outputs.type }}-${{ github.run_id }}
           path: |
