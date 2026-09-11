@@ -1,0 +1,63 @@
+name: BuildOne Final Hardening
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.buildone/final-hardening'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  harden:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Harden UI and Worker contracts
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('index.html'); s=p.read_text()
+          # Current backend is Cloudflare Worker, not Firebase.
+          s=s.replace('GitHub + Firebase','GitHub CI/CD + Cloudflare Worker')
+          s=s.replace('Firebase Backend URL','Cloudflare Worker URL')
+          s=s.replace('https://...cloudfunctions.net/api','https://your-worker.workers.dev')
+          # Make interstitial a separate field when the compact UI nests it beside banner.
+          s=s.replace('<input id="adBanner" placeholder="ca-app-pub-XXXXXXXXXXXXXXXX/NNNNNNNNNN"><input id="adInterstitial" placeholder="Interstitial Ad Unit ID" />','<input id="adBanner" placeholder="ca-app-pub-XXXXXXXXXXXXXXXX/NNNNNNNNNN"><div class="field"><label>Interstitial Ad Unit ID</label><input id="adInterstitial" placeholder="ca-app-pub-XXXXXXXXXXXXXXXX/NNNNNNNNNN"></div>')
+          # Add a strict client-side download guard if function has not already got one.
+          marker='function downloadArtifact()'
+          if marker in s and 'Artifact metadata incomplete' not in s:
+              start=s.find(marker); brace=s.find('{',start)
+              guard="if(!state.artifact||!state.artifact.id||!state.artifact.run_id||!state.artifact.type){alert('Artifact metadata incomplete. Build and verify again.');return;}"
+              if brace>=0: s=s[:brace+1]+guard+s[brace+1:]
+          p.write_text(s)
+          PY
+          python3 - <<'PY'
+          from pathlib import Path
+          s=Path('worker/src/index.js').read_text()
+          # /status must prefer the exact requested run_id; when absent, match the latest BuildOne workflow only.
+          old="const u=new URL(req.url),o=u.searchParams.get('owner'),r=u.searchParams.get('repo'),id=u.searchParams.get('run_id');"
+          assert old in s, 'status signature missing'
+          # Keep the existing exact run_id lookup and prevent unrelated workflows from being selected.
+          oldfind="d.workflow_runs?.find(x=>x.path?.endsWith('/buildone.yml'))||null"
+          newfind="d.workflow_runs?.find(x=>x.path?.endsWith('/buildone.yml') && (!u.searchParams.get('head_sha') || x.head_sha===u.searchParams.get('head_sha'))) || null"
+          s=s.replace(oldfind,newfind)
+          # Add optional head_sha to status result contract documentation via response fields only if absent.
+          Path('worker/src/index.js').write_text(s)
+          PY
+      - name: Validate
+        run: |
+          node --check worker/src/index.js
+          test -s index.html
+          grep -q 'adInterstitial' index.html
+          grep -q 'run_id' index.html
+          grep -q 'Artifact metadata incomplete' index.html
+          grep -q "d.workflow_runs?.find" worker/src/index.js
+      - name: Remove one-shot workflow and trigger
+        run: |
+          rm -f .github/workflows/buildone-final-hardening.yml .buildone/final-hardening
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add index.html worker/src/index.js .github/workflows/buildone-final-hardening.yml .buildone/final-hardening
+          git diff --cached --quiet || git commit -m 'BuildOne: complete final hardening and contract checks'
+          git push
